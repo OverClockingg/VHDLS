@@ -1,0 +1,63 @@
+----------------------------------------------------------------------------------
+-- Institución: IPN - UPIITA
+-- Módulo:      Encoder_Velocidad
+-- Descripción: Detección de pulsos ópticos y generación de señal de paso
+----------------------------------------------------------------------------------
+
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+
+entity Encoder_Velocidad is 
+    port( 
+        clk        : in  std_logic; 
+        rst_fisico : in  std_logic; 
+        rst_cambio : in  std_logic; 
+        s_opt_A    : in  std_logic; 
+        s_opt_B    : in  std_logic; 
+        paso_vel   : out std_logic; 
+        dir_vel    : out std_logic; 
+        leds_shift : out std_logic_vector(3 downto 0) 
+    ); 
+end Encoder_Velocidad; 
+
+architecture Behavioral of Encoder_Velocidad is 
+    -- Temporizador para estirar el pulso y hacerlo visible (100ms a 50MHz)
+    signal timer : integer range 0 to 10_000_000 := 0; 
+begin 
+
+    process(clk) 
+    begin 
+        if rising_edge(clk) then 
+            -- Lógica de Reset
+            if rst_fisico = '1' or rst_cambio = '1' then 
+                timer <= 0; 
+                paso_vel <= '0'; 
+            else 
+                -- DETECCIÓN POR NIVEL 
+                -- Si cualquiera de los sensores detecta obstrucción (lógico '0')
+                if s_opt_A = '0' or s_opt_B = '0' then 
+                    timer <= 5_000_000; -- Recarga el contador para mantener el pulso
+                    
+                    if s_opt_A = '0' then 
+                        dir_vel <= '0'; 
+                    else 
+                        dir_vel <= '1'; 
+                    end if; 
+                end if; 
+
+                -- GENERACIÓN DEL PULSO DE SALIDA
+                -- Mientras el timer sea mayor a 0, la salida se mantiene en '1'
+                if timer > 0 then 
+                    paso_vel <= '1'; 
+                    timer <= timer - 1; 
+                else 
+                    paso_vel <= '0'; 
+                end if; 
+            end if; 
+        end if; 
+    end process; 
+
+    -- Monitor de carga de programa
+    leds_shift <= "1111"; 
+
+end Behavioral;
