@@ -1,1 +1,495 @@
+# LCD TEAM – Controlador Modular para LCD 16x2 en VHDL
 
+## Descripción general
+
+**LCD TEAM** es un sistema digital desarrollado en **VHDL** para controlar un display LCD 16x2 compatible con el controlador **HD44780**,
+operando en **modo de 4 bits** sobre FPGA.El proyecto implementa una arquitectura modular basada en **Máquinas de Estados Finitos (FSM)**
+para dividir claramente las responsabilidades de inicialización, temporización, gestión de mensajes y comunicación física con el LCD.
+
+El sistema fue diseñado con un enfoque de **abstracción jerárquica**, separando el control del hardware del manejo lógico de mensajes 
+para mejorar escalabilidad, mantenimiento y reutilización del código.
+
+---
+
+# Características principales
+
+- Inicialización automática del LCD según protocolo **HD44780**
+- Comunicación en **modo 4 bits**
+- Arquitectura completamente modular
+- Temporización precisa basada en reloj FPGA
+- Gestión automática de mensajes
+- Cambio automático al segundo renglón del LCD
+- Prevención de retransmisiones redundantes
+- Señales de estado (`busy`, `done`, `init_done`)
+- Código totalmente sintetizable
+- Diseño orientado a reutilización y escalabilidad
+
+---
+
+# Arquitectura del sistema
+
+El diseño está compuesto por cinco módulos principales:
+
+```text
+                    +----------------------+
+                    |      LCD_TEAM        |
+                    |    (Top Level)       |
+                    +----------+-----------+
+                               |
+          +--------------------+--------------------+
+          |                    |                    |
+          v                    v                    v
++----------------+   +----------------+   +----------------+
+|   LCD_Timer    |   | lcd_init_fsm   |   | FSM_Mensajes   |
++----------------+   +----------------+   +----------------+
+                                              |
+                                              v
+                                       +--------------+
+                                       |   FSM_LCD    |
+                                       +--------------+
+                                              |
+                                              v
+                                            LCD 16x2
+```
+
+---
+
+# Descripción de módulos
+
+---
+
+## 1. `LCD_TEAM.vhd`
+
+### Función
+
+Módulo **Top-Level** del proyecto.
+
+Integra todos los bloques funcionales y administra el **multiplexado automático del control físico del LCD** entre:
+
+- **Inicialización (`lcd_init_fsm`)**
+- **Operación normal (`FSM_LCD`)**
+
+### Responsabilidades
+
+- Instanciar todos los módulos
+- Conectar señales internas
+- Gestionar el cambio de control del LCD
+- Mantener `LCD_RW` permanentemente en escritura
+
+### Entradas
+
+| Señal | Descripción |
+|------|-------------|
+| `clk` | Reloj principal |
+| `rst` | Reset general |
+
+### Salidas
+
+| Señal | Descripción |
+|------|-------------|
+| `LCD_RS` | Selección dato/comando |
+| `LCD_RW` | Lectura/escritura (fijo en 0) |
+| `LCD_E` | Enable |
+| `LCD_D[3:0]` | Bus de datos |
+
+---
+
+## 2. `LCD_Timer.vhd`
+
+### Función
+
+Generador de **base de tiempo** para todo el sistema.
+
+Convierte el reloj principal de la FPGA en un pulso de habilitación cada **1 microsegundo** (`ce_1us`).
+
+### Características
+
+- Resolución parametrizable
+- Bajo costo lógico
+- Salida registrada (sin glitches)
+- Protección mediante `assert`
+
+### Parámetros
+
+```vhdl
+CLK_FREQ_HZ   := 50_000_000
+RESOLUTION_US := 1
+```
+
+### Salida principal
+
+```text
+ce_1us
+```
+
+Pulso de un ciclo cada 1 μs.
+
+---
+
+## 3. `lcd_init_fsm.vhd`
+
+### Función
+
+Inicializa automáticamente el LCD conforme al protocolo **HD44780**.
+
+Antes de cualquier operación normal, este módulo ejecuta la secuencia obligatoria de arranque.
+
+---
+
+### Secuencia implementada
+
+#### 1. Espera inicial
+
+```text
+> 15 ms
+```
+
+Permite estabilización del LCD tras encendido.
+
+---
+
+#### 2. Wake-up sequence
+
+Se envía tres veces:
+
+```text
+0x3
+```
+
+---
+
+#### 3. Cambio a modo 4 bits
+
+```text
+0x2
+```
+
+---
+
+#### 4. Function Set
+
+```text
+0x28
+```
+
+Configura:
+
+- 2 líneas
+- matriz 5x8
+
+---
+
+#### 5. Display ON/OFF
+
+```text
+0x0C
+```
+
+Configura:
+
+- Display ON
+- Cursor OFF
+
+---
+
+#### 6. Clear Display
+
+```text
+0x01
+```
+
+---
+
+### Estados FSM
+
+```text
+POWER_UP
+LOAD_BUS
+STABILIZE
+PULSE_E
+HOLD_DATA
+DELAY_STATE
+DONE
+```
+
+---
+
+### Señal de salida
+
+```text
+init_done
+```
+
+Indica que el LCD ya puede ser utilizado.
+
+---
+
+## 4. `FSM_Mensajes.vhd`
+
+### Función
+
+Administrador lógico de mensajes.
+
+Actúa como **intermediario entre el sistema de alto nivel y el driver físico del LCD**.
+
+---
+
+### Responsabilidades
+
+- Detectar nuevos comandos
+- Filtrar comandos repetidos
+- Evitar retransmisiones
+- Mantener estable `msg_id`
+- Generar pulso `start_drv`
+- Esperar disponibilidad del driver
+
+---
+
+### Estados
+
+```text
+ST_IDLE
+ST_LATCH
+ST_TRIGGER
+ST_WAIT
+```
+
+---
+
+### Protección contra reenvíos
+
+Se utiliza:
+
+```vhdl
+last_cmd_reg
+```
+
+Para evitar escribir repetidamente el mismo mensaje.
+
+---
+
+## 5. `FSM_LCD.vhd`
+
+### Función
+
+Driver físico de bajo nivel para escritura en LCD.
+
+Este módulo implementa el protocolo completo de transmisión en **modo de 4 bits**.
+
+---
+
+### Responsabilidades
+
+- Limpiar pantalla
+- Obtener caracteres desde `lcd_pkg`
+- Enviar bytes al LCD
+- Dividir bytes en:
+
+```text
+Nibble alto
+Nibble bajo
+```
+
+- Generar pulsos `LCD_E`
+- Respetar tiempos internos del LCD
+- Cambiar automáticamente al segundo renglón
+
+---
+
+### Estados principales
+
+```text
+ST_IDLE
+ST_CLEAR
+ST_FETCH
+ST_SETUP_H
+ST_PULSE_H
+ST_HOLD_H
+ST_SETUP_L
+ST_PULSE_L
+ST_HOLD_L
+ST_WAIT
+ST_NEXT
+ST_DONE
+```
+
+---
+
+### Cambio automático de línea
+
+Al escribir el carácter 16:
+
+```text
+0xC0
+```
+
+Se envía automáticamente el comando para mover el cursor al segundo renglón.
+
+---
+
+# Dependencia adicional: `lcd_pkg`
+
+El sistema depende de un paquete auxiliar:
+
+```text
+lcd_pkg.vhd
+```
+
+Este contiene:
+
+- Mensajes predefinidos
+- Diccionario de caracteres
+- Función:
+
+```vhdl
+get_lcd_char()
+```
+
+- Función:
+
+```vhdl
+get_msg_len()
+```
+
+---
+
+# Flujo completo del sistema
+
+## Encendido
+
+```text
+Reset
+```
+
+---
+
+## Inicialización
+
+```text
+lcd_init_fsm
+```
+
+Controla completamente el LCD.
+
+---
+
+## Activación
+
+Cuando:
+
+```text
+init_done = '1'
+```
+
+El control se transfiere al sistema normal.
+
+---
+
+## Gestión de mensajes
+
+```text
+FSM_Mensajes
+```
+
+Selecciona el mensaje.
+
+---
+
+## Escritura física
+
+```text
+FSM_LCD
+```
+
+Envía el mensaje al LCD.
+
+---
+
+# Requisitos de hardware
+
+Compatible con cualquier FPGA que disponga de:
+
+- reloj de **50 MHz**
+- GPIO suficientes para LCD 16x2
+
+---
+
+## Conexión LCD
+
+| LCD | FPGA |
+|----|------|
+| RS | `LCD_RS` |
+| RW | `LCD_RW` |
+| E | `LCD_E` |
+| D4 | `LCD_D(0)` |
+| D5 | `LCD_D(1)` |
+| D6 | `LCD_D(2)` |
+| D7 | `LCD_D(3)` |
+
+---
+
+# Compilación
+
+Compatible con:
+
+- Intel Quartus
+- ModelSim
+- Vivado (adaptando constraints)
+
+Orden recomendado:
+
+```text
+lcd_pkg.vhd
+LCD_Timer.vhd
+lcd_init_fsm.vhd
+FSM_Mensajes.vhd
+FSM_LCD.vhd
+LCD_TEAM.vhd
+```
+
+---
+
+# Ventajas del diseño
+
+## Modularidad
+
+Cada FSM tiene una única responsabilidad.
+
+---
+
+## Escalabilidad
+
+Es sencillo agregar:
+
+- nuevos mensajes
+- sensores
+- botones
+- menús
+
+---
+
+## Reutilización
+
+`FSM_LCD` puede reutilizarse como driver genérico para cualquier proyecto LCD.
+
+---
+
+## Mantenimiento sencillo
+
+La separación entre:
+
+- temporización
+- inicialización
+- lógica
+- protocolo físico
+
+facilita depuración y mejoras futuras.
+
+
+
+**Instituto Politécnico Nacional (IPN)**  
+**UPIITA**
+
+Proyecto académico de diseño digital en FPGA.
+
+---
